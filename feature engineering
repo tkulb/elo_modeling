@@ -1,0 +1,571 @@
+def reduce_mem_usage(df, verbose=True):
+    numerics = ['int16', 'int32', 'int64', 'float16', 'float32', 'float64']
+    start_mem = df.memory_usage().sum() / 1024**2    
+    for col in df.columns:
+        col_type = df[col].dtypes
+        if col_type in numerics:
+            c_min = df[col].min()
+            c_max = df[col].max()
+            if str(col_type)[:3] == 'int':
+                if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max:
+                    df[col] = df[col].astype(np.int8)
+                elif c_min > np.iinfo(np.int16).min and c_max < np.iinfo(np.int16).max:
+                    df[col] = df[col].astype(np.int16)
+                elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
+                    df[col] = df[col].astype(np.int32)
+                elif c_min > np.iinfo(np.int64).min and c_max < np.iinfo(np.int64).max:
+                    df[col] = df[col].astype(np.int64)  
+            else:
+                if c_min > np.finfo(np.float16).min and c_max < np.finfo(np.float16).max:
+                    df[col] = df[col].astype(np.float16)
+                elif c_min > np.finfo(np.float32).min and c_max < np.finfo(np.float32).max:
+                    df[col] = df[col].astype(np.float32)
+                else:
+                    df[col] = df[col].astype(np.float64)    
+    end_mem = df.memory_usage().sum() / 1024**2
+    if verbose: print('Mem. usage decreased to {:5.2f} Mb ({:.1f}% reduction)'.format(end_mem, 100 * (start_mem - end_mem) / start_mem))
+    return df
+
+
+
+%%time
+!ls ../input/
+train_df = pd.read_csv("../input/elo-merchant-category-recommendation/train.csv", parse_dates=["first_active_month"])
+test_df = pd.read_csv("../input/elo-merchant-category-recommendation/test.csv", parse_dates=["first_active_month"])
+print("Number of rows and columns in train set : ",train_df.shape)
+print("Number of rows and columns in test set : ",test_df.shape)
+
+# train_df.head()
+target_col = "target"
+
+train_df2 = train_df
+test_df2 = test_df
+
+reduce_mem_usage(train_df2)
+reduce_mem_usage(test_df2)
+elo-merchant-category-recommendation  simple-exploration-notebook-elo-259e08
+Number of rows and columns in train set :  (201917, 6)
+Number of rows and columns in test set :  (123623, 5)
+Mem. usage decreased to  4.04 Mb (56.2% reduction)
+Mem. usage decreased to  2.24 Mb (52.5% reduction)
+CPU times: user 492 ms, sys: 108 ms, total: 600 ms
+Wall time: 1.11 s
+train_df2['outliers'] = 0
+train_df2.loc[train_df2['target'] < -30, 'outliers'] = 1
+train_df2['outliers'].value_counts()
+
+# test_df2['outliers'] = 0
+# test_df2.loc[test_df2['target'] < -30, 'outliers'] = 1
+# test_df2['outliers'].value_counts()
+
+
+
+start = timeit.default_timer()
+
+hist_df = pd.read_csv("../input/elo-merchant-category-recommendation/historical_transactions.csv")
+hist_df = reduce_mem_usage(hist_df)
+hist_card_id_size = hist_df.groupby(['card_id']).size().reset_index(name="hist_card_id_size")
+train_df2 = pd.merge(train_df2, hist_card_id_size, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, hist_card_id_size, on="card_id", how="left")
+hist_df2 = hist_df[0:100000]
+
+merch_df = pd.read_csv("../input/elo-merchant-category-recommendation/new_merchant_transactions.csv")
+merch_df = reduce_mem_usage(merch_df)
+merch_card_id_size = merch_df.groupby(['card_id']).size().reset_index(name="merch_card_id_size")
+train_df2 = pd.merge(train_df2, merch_card_id_size, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, merch_card_id_size, on="card_id", how="left")
+merch_df2 = merch_df[0:100000]
+
+
+def timestamp_to_seconds(time):
+    seconds = sum(x * int(t) for x, t in zip([3600, 60, 1], time.split(':'))) 
+    return seconds
+
+hist_df2['purchase_time'] = hist_df2['purchase_date'].str.split(' ')
+hist_df2['purchase_date_strip'] = hist_df2['purchase_time'].str[0]
+hist_df2['purchase_time'] = hist_df2['purchase_time'].str[1]
+
+merch_df2['purchase_time'] = merch_df2['purchase_date'].str.split(' ')
+merch_df2['purchase_date_strip'] = merch_df2['purchase_time'].str[0]
+merch_df2['purchase_time'] = merch_df2['purchase_time'].str[1]
+
+hist_df2['purchase_seconds'] = hist_df2['purchase_time'].apply(lambda x: timestamp_to_seconds(x))
+merch_df2['purchase_seconds'] = merch_df2['purchase_time'].apply(lambda x: timestamp_to_seconds(x))
+
+
+hist_df2['purchase_date'] = pd.to_datetime(hist_df2['purchase_date'])
+merch_df2['purchase_date'] = pd.to_datetime(merch_df2['purchase_date'])
+
+hist_purchase_date_max = hist_df2.groupby(["card_id"])["purchase_date"].max().reset_index(name='hist_purchase_date_max')
+merch_purchase_date_max = merch_df2.groupby(["card_id"])["purchase_date"].max().reset_index(name='merch_purchase_date_max')
+hist_purchase_date_min = hist_df2.groupby(["card_id"])["purchase_date"].min().reset_index(name='hist_purchase_date_min')
+merch_purchase_date_min = merch_df2.groupby(["card_id"])["purchase_date"].min().reset_index(name='merch_purchase_date_min')
+
+dates_min_max = pd.concat([hist_purchase_date_max,hist_purchase_date_min,merch_purchase_date_max,merch_purchase_date_min],sort=False,axis=1).reset_index()
+dates_min_max = dates_min_max.loc[:,~dates_min_max.columns.duplicated()]
+
+train_df2 = pd.merge(train_df2, dates_min_max, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, dates_min_max, on="card_id", how="left")
+
+# train_df2 = pd.merge(train_df2, hist_purchase_date_max, on="card_id", how="left")
+# test_df2 = pd.merge(test_df2, hist_purchase_date_max, on="card_id", how="left")
+
+# train_df2 = pd.merge(train_df2, merch_purchase_date_max, on="card_id", how="left")
+# test_df2 = pd.merge(test_df2, merch_purchase_date_max, on="card_id", how="left")
+
+# train_df2 = pd.merge(train_df2, hist_purchase_date_min, on="card_id", how="left")
+# test_df2 = pd.merge(test_df2, hist_purchase_date_min, on="card_id", how="left")
+
+# train_df2 = pd.merge(train_df2, merch_purchase_date_min, on="card_id", how="left")
+# test_df2 = pd.merge(test_df2, merch_purchase_date_min, on="card_id", how="left")
+
+train_df2["hist_purchase_date_max"] = pd.to_datetime(train_df2["hist_purchase_date_max"])
+test_df2["hist_purchase_date_max"] = pd.to_datetime(test_df2["hist_purchase_date_max"])
+train_df2["hist_purchase_date_min"] = pd.to_datetime(train_df2["hist_purchase_date_min"])
+test_df2["hist_purchase_date_min"] = pd.to_datetime(test_df2["hist_purchase_date_min"])
+train_df2["merch_purchase_date_max"] = pd.to_datetime(train_df2["merch_purchase_date_max"])
+test_df2["merch_purchase_date_max"] = pd.to_datetime(test_df2["merch_purchase_date_max"])
+train_df2["merch_purchase_date_min"] = pd.to_datetime(train_df2["merch_purchase_date_min"])
+test_df2["merch_purchase_date_min"] = pd.to_datetime(test_df2["merch_purchase_date_min"])
+
+train_df2['hist_purchase_date_diff']= (pd.to_datetime(train_df2["hist_purchase_date_max"]) - pd.to_datetime(train_df2["hist_purchase_date_min"])).dt.days
+test_df2['hist_purchase_date_diff']= (pd.to_datetime(test_df2["hist_purchase_date_max"]) - pd.to_datetime(test_df2["hist_purchase_date_min"]))
+
+train_df2['merch_purchase_date_diff']= (pd.to_datetime(train_df2["merch_purchase_date_max"]) - pd.to_datetime(train_df2["merch_purchase_date_min"]))
+test_df2['merch_purchase_date_diff']= (pd.to_datetime(test_df2["merch_purchase_date_max"]) - pd.to_datetime(test_df2["merch_purchase_date_min"]))
+
+
+# safe assumption?
+for df in [hist_df2,merch_df2]:
+    df['category_2'].fillna(1.0,inplace=True)
+    df['category_3'].fillna('A',inplace=True)
+    df['merchant_id'].fillna('M_ID_00a6ca8a8a',inplace=True)
+    
+hist_df2 = pd.get_dummies(hist_df2,columns=['category_2','category_3'])
+merch_df2 = pd.get_dummies(merch_df2,columns=['category_2','category_3'])
+
+hist_df2['category_1'] = hist_df2['category_1'].map({'Y':1,'N':0})
+merch_df2['category_1'] = merch_df2['category_1'].map({'Y':1,'N':0})
+
+end = timeit.default_timer()
+print("Time elapsed is:",end - start)
+Mem. usage decreased to 1749.11 Mb (43.7% reduction)
+Mem. usage decreased to 114.20 Mb (45.5% reduction)
+Time elapsed is: 108.213072241997
+train_df2['first_active_month'] = pd.to_datetime(train_df2['first_active_month'])
+test_df2['first_active_month'] = pd.to_datetime(test_df2['first_active_month'])
+
+train_df2["year_active"] = train_df2["first_active_month"].dt.year
+test_df2["year_active"] = test_df2["first_active_month"].dt.year
+train_df2["month_active"] = train_df2["first_active_month"].dt.month
+test_df2["month_active"] = test_df2["first_active_month"].dt.month
+train_df2["day_active"] = train_df2["first_active_month"].dt.day
+test_df2["day_active"] = test_df2["first_active_month"].dt.day
+
+train_df2["elapsed_time"] = (datetime.date(2018,2,1) - train_df2['first_active_month'].dt.date).dt.days
+test_df2["elapsed_time"] = (datetime.date(2018,2,1) - test_df2['first_active_month'].dt.date).dt.days
+
+train_df2["elapsed_time_merch_max"] = (train_df2['merch_purchase_date_max'].dt.date - train_df2['first_active_month'].dt.date).dt.days
+test_df2["elapsed_time_merch_max"] = (test_df2['merch_purchase_date_max'].dt.date - test_df2['first_active_month'].dt.date).dt.days
+
+train_df2["elapsed_time_hist_max"] = (train_df2['hist_purchase_date_max'].dt.date - train_df2['first_active_month'].dt.date).dt.days
+test_df2["elapsed_time_hist_max"] = (test_df2['hist_purchase_date_max'].dt.date - test_df2['first_active_month'].dt.date).dt.days
+
+train_df2["elapsed_time_merch_min"] = (train_df2['merch_purchase_date_min'].dt.date - train_df2['first_active_month'].dt.date).dt.days
+test_df2["elapsed_time_merch_min"] = (test_df2['merch_purchase_date_min'].dt.date - test_df2['first_active_month'].dt.date).dt.days
+
+train_df2["elapsed_time_hist_min"] = (train_df2['hist_purchase_date_min'].dt.date - train_df2['first_active_month'].dt.date).dt.days
+test_df2["elapsed_time_hist_min"] = (test_df2['hist_purchase_date_min'].dt.date - test_df2['first_active_month'].dt.date).dt.days
+hist_df2['purchase_month'] = pd.to_datetime(hist_df2['purchase_date']).dt.month
+merch_df2['purchase_month'] = pd.to_datetime(merch_df2['purchase_date']).dt.month
+
+hist_df2['month_diff'] = ((datetime.datetime.today() - pd.to_datetime(hist_df2['purchase_date'])).dt.days)//30
+hist_df2['month_diff'] += hist_df2['month_lag']
+
+merch_df2['month_diff'] = ((datetime.datetime.today() - pd.to_datetime(merch_df2['purchase_date'])).dt.days)//30
+merch_df2['month_diff'] += merch_df2['month_lag']
+
+
+hist_df2["year"] = pd.DatetimeIndex(hist_df2["purchase_date"]).year
+hist_df2["month"] = pd.DatetimeIndex(hist_df2["purchase_date"]).month
+hist_df2["day"] = pd.DatetimeIndex(hist_df2["purchase_date"]).day
+hist_df2["hour"] = pd.DatetimeIndex(hist_df2["purchase_date"]).hour
+
+merch_df2["year"] = pd.DatetimeIndex(merch_df2["purchase_date"]).year
+merch_df2["month"] = pd.DatetimeIndex(merch_df2["purchase_date"]).month
+merch_df2["day"] = pd.DatetimeIndex(merch_df2["purchase_date"]).day
+merch_df2["hour"] = pd.DatetimeIndex(merch_df2["purchase_date"]).hour
+
+# train / test?
+train_df2['hist_purchase_date_average'] = train_df2['hist_purchase_date_diff']/train_df2['hist_card_id_size']
+train_df2['hist_purchase_date_average'] = train_df2['merch_purchase_date_diff']/train_df2['merch_card_id_size']
+test_df2['hist_purchase_date_average'] = test_df2['hist_purchase_date_diff']/test_df2['hist_card_id_size']
+test_df2['hist_purchase_date_average'] = test_df2['merch_purchase_date_diff']/test_df2['merch_card_id_size']
+
+train_df2['hist_purchase_date_uptonow'] = (datetime.datetime.today() - train_df2['hist_purchase_date_max']).dt.days
+test_df2['merch_purchase_date_uptonow'] = (datetime.datetime.today() - test_df2['merch_purchase_date_max']).dt.days
+def get_weekday(date_string):
+    date = datetime.datetime.strptime(date_string, '%Y-%m-%d')
+    return calendar.day_name[date.weekday()]
+
+# get weekday for date variable
+hist_df2['purchase_weekday'] = hist_df2['purchase_date_strip'].apply(lambda x: get_weekday(x))
+merch_df2['purchase_weekday'] = merch_df2['purchase_date_strip'].apply(lambda x: get_weekday(x))
+
+# for plotting recode to ordered categorical
+day_labels = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+hist_df2['purchase_weekday'] = pd.Categorical(hist_df2['purchase_weekday'], categories = day_labels, 
+                                          ordered = True)
+merch_df2['purchase_weekday'] = pd.Categorical(merch_df2['purchase_weekday'], categories = day_labels, 
+                                          ordered = True)
+
+def weekend(x):
+    for y in ['Saturday','Sunday']:
+        if x in y :
+            return 1
+        else: 
+            return 0
+hist_df2['weekend_flag'] = hist_df2['purchase_weekday'].apply(weekend)
+merch_df2['weekend_flag'] = merch_df2['purchase_weekday'].apply(weekend)
+
+hist_df2 = pd.get_dummies(hist_df2,columns='purchase_session')
+merch_df2 = pd.get_dummies(merch_df2,columns='purchase_session')
+
+# def get_month(date_string, kind = 'month'):
+#     if kind == 'month':
+#         date = datetime.datetime.strptime(date_string, '%Y-%m')
+#     elif kind == 'day':
+#         date = datetime.datetime.strptime(date_string, '%Y-%m-%d')
+#     return date.strftime("%B")
+
+# hist_df2['purchase_month'] = hist_df2['purchase_date_strip'].apply(lambda x: get_month(x, kind = 'day'))
+# hist_df2['first_active_month2'] = hist_df2['first_active_month'].apply(lambda x: get_month(x))
+# hist_df2['first_active_year'] = hist_df2['first_active_month'].str[:4]
+
+# month_labels = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
+#                 'September', 'October', 'November', 'December']
+# data['purchase_month'] = pd.Categorical(data['purchase_month'], categories = month_labels, 
+#                                           ordered = True)
+# data['first_active_month2'] = pd.Categorical(data['first_active_month2'], categories = month_labels, 
+#                                           ordered = True)
+
+# year_labels = ['2011', '2012', '2013', '2014', '2015', '2016', '2017', '2018']
+# data['first_active_year'] = pd.Categorical(data['first_active_year'], categories = year_labels, 
+#                                           ordered = True)
+
+# get time of the day
+hist_df2['temp'] = hist_df2['purchase_time'].str.split(':')
+merch_df2['temp'] = merch_df2['purchase_time'].str.split(':')
+
+def get_session(time_list):
+    time_list[0] = int(time_list[0])
+    if time_list[0] > 4 and time_list[0] < 12:
+        return 'Morning'
+    elif time_list[0] >= 12 and time_list[0] < 17:
+        return 'Afternoon'
+    elif time_list[0] >= 17 and time_list[0] < 21:
+        return 'Evening'
+    else:
+        return 'Night'
+    
+hist_df2['purchase_session'] = hist_df2['temp'].apply(lambda x: get_session(x))
+merch_df2['purchase_session'] = merch_df2['temp'].apply(lambda x: get_session(x))
+
+session_labels = ['Morning', 'Afternoon', 'Evening', 'Night']
+hist_df2['purchase_session'] = pd.Categorical(hist_df2['purchase_session'], categories = session_labels, 
+                                          ordered = True)
+merch_df2['purchase_session'] = pd.Categorical(merch_df2['purchase_session'], categories = session_labels, 
+                                          ordered = True)
+
+
+
+# DEFINE NUMERIC FUNCTIONS - AGGREGATE AND NON-AGGREGATE
+def percentile(n):
+    def percentile_(x):
+        return np.percentile(x, n)
+    percentile_.__name__ = 'percentile_%s' % n
+    return percentile_
+
+def func_isnull(x):
+    return x.isnull().sum()
+
+def func_IQR(x):
+    return np.percentile(x,75) - np.percentile(x,25)
+
+# also np.ptp computes the range
+def func_range(x):
+    return max(x) - min(x)
+
+import math
+def sigmoid(x): 
+    e = math.exp(1)
+    return 1 / (1 + e**(-x)) 
+#Perform simple aggregates
+
+def aggregate_transactions(history):
+    
+    history.loc[:, 'purchase_date_int'] = pd.DatetimeIndex(history['purchase_date']).\
+                                      astype(np.int64) * 1e-9
+    
+    agg_func = {
+    'category_1': ['sum', 'mean'],
+    'category_2_1.0': ['mean'],
+    'category_2_2.0': ['mean'],
+    'category_2_3.0': ['mean'],
+    'category_2_4.0': ['mean'],
+    'category_2_5.0': ['mean'],
+    'category_3_A': ['mean'],
+    'category_3_B': ['mean'],
+    'category_3_C': ['mean'],
+    'merchant_id': ['nunique'],
+    'merchant_category_id': ['nunique'],
+    'state_id': ['nunique'],
+    'city_id': ['nunique'],
+    'subsector_id': ['nunique'],
+    'purchase_amount': ['sum', 'mean', 'max', 'min', 'std'],
+    'installments': ['sum', 'mean', 'max', 'min', 'std'],
+    'purchase_month': ['mean', 'max', 'min', 'std'],
+    'purchase_date_int': [np.ptp, 'min', 'max'],
+    'month_lag': ['mean', 'max', 'min', 'std'],
+    'month_diff': ['mean']
+    'weekend_flag': ['sum','mean']
+    'purchase_seconds': ['sum','mean','max','min','std']
+    }
+    
+    agg_history = history.groupby(['card_id']).agg(agg_func)
+    agg_history.columns = ['_'.join(col).strip() for col in agg_history.columns.values]
+    agg_history.reset_index(inplace=True)
+    
+    df = (history.groupby('card_id')
+          .size()
+          .reset_index(name='transactions_count'))
+    
+    agg_history = pd.merge(df, agg_history, on='card_id', how='left')
+    
+    return agg_history
+
+
+
+# agg_col = 'purchase_amount'
+def agg_functions(x):
+    names = {
+#          prefix + '_count': x[agg_col].size(),
+#          prefix + '_count': x[agg_col].count(),
+        prefix + '_sum': x[agg_col].sum()
+        ,prefix + '_mean': x[agg_col].mean()
+        ,prefix + '_min': x[agg_col].min()
+        ,prefix + '_max': x[agg_col].max()
+        ,prefix + '_std': x[agg_col].std()
+        ,prefix + '_skew': x[agg_col].skew()
+        ,prefix + '_nunique': x[agg_col].nunique()
+        
+        ,prefix + '_p5': np.percentile(x[agg_col],q=5)
+        ,prefix + '_p95': np.percentile(x[agg_col],q=95)
+        ,prefix + '_p20': np.percentile(x[agg_col],q=20)
+        ,prefix + '_p80': np.percentile(x[agg_col],q=80)
+        ,prefix + '_kurt': pd.DataFrame.kurt(x[agg_col])
+        ,prefix + '_missing': func_isnull(x[agg_col])
+        ,prefix + '_range': func_range(x[agg_col])
+        ,prefix + '_IQR': func_IQR(x[agg_col])
+    }
+    return pd.Series(names
+        , index=[
+#         prefix + '_count',
+        prefix + '_sum'
+        ,prefix + '_mean'
+        ,prefix + '_min'
+        ,prefix + '_max'
+        ,prefix + '_std'
+        ,prefix + '_skew'
+        
+        ,prefix + '_p5'
+        ,prefix + '_p95'
+        ,prefix + '_p20'
+        ,prefix + '_p80'
+        ,prefix + '_kurt'
+        ,prefix + '_missing'
+        ,prefix + '_range'
+        ,prefix + '_IQR'
+                                  ])
+# Count Aggregates
+agg_col='count_trans'
+prefix = "hist_year_trans"
+hist_year_df = hist_df2.groupby(["card_id","year"]).size().reset_index(name=agg_col)
+hist_year_df = hist_year_df.groupby(['card_id']).apply(agg_functions)
+
+prefix = "hist_month_trans"
+hist_month_trans = hist_df2.groupby(["card_id","year","month"]).size().reset_index(name=agg_col)
+hist_month_trans = hist_month_trans.groupby(['card_id']).apply(agg_functions)
+
+prefix = "hist_day_trans"
+hist_day_trans = hist_df2.groupby(["card_id","year","day"]).size().reset_index(name=agg_col)
+hist_day_trans = hist_day_trans.groupby(['card_id']).apply(agg_functions)
+
+prefix = "merch_year_trans"
+merch_year_df = merch_df2.groupby(["card_id","year"]).size().reset_index(name=agg_col)
+merch_year_df = merch_year_df.groupby(['card_id']).apply(agg_functions)
+
+prefix = "merch_month_trans"
+merch_month_df = merch_df2.groupby(["card_id","year","month"]).size().reset_index(name=agg_col)
+merch_month_df = merch_month_df.groupby(['card_id']).apply(agg_functions)
+
+prefix = "merch_day_trans"
+merch_day_trans = merch_df2.groupby(["card_id","year","day"]).size().reset_index(name=agg_col)
+merch_day_trans = merch_day_trans.groupby(['card_id']).apply(agg_functions)
+# Join Count Aggregates
+train_df2 = pd.merge(train_df2, hist_year_df2, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, hist_year_df2, on="card_id", how="left")   
+
+train_df2 = pd.merge(train_df2, hist_month_df2, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, hist_month_df2, on="card_id", how="left")   
+
+train_df2 = pd.merge(train_df2, hist_day_df2, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, hist_day_df2, on="card_id", how="left")   
+
+train_df2 = pd.merge(train_df2, merch_year_df2, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, merch_year_df2, on="card_id", how="left")   
+
+train_df2 = pd.merge(train_df2, merch_month_df2, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, merch_month_df2, on="card_id", how="left")   
+
+train_df2 = pd.merge(train_df2, merch_day_df2, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, merch_day_df2, on="card_id", how="left")   
+
+
+
+#Successive Aggregates
+# Card ID Groups
+agg_col = 'purchase_amount'
+prefix = 'hist_' + agg_col
+hist_df2_grp_purchase_amount = hist_df2.groupby("card_id").apply(agg_functions).reset_index()
+
+agg_col = 'purchase_amount'
+prefix = 'merch_' + agg_col
+merch_df2_grp_purchase_amount = merch_df2.groupby("card_id").apply(agg_functions).reset_index()
+
+agg_col = 'installments'
+prefix = 'hist_' + agg_col
+hist_df2_grp_installments = hist_df2.groupby("card_id").apply(agg_functions).reset_index()
+
+agg_col = 'installments'
+prefix = 'merch_' + agg_col
+merch_df2_grp_installments = merch_df2.groupby("card_id").apply(agg_functions).reset_index()
+
+hist_df2_grp_concat = pd.concat([hist_df2_grp_purchase_amount,hist_df2_grp_installments],sort=False,axis=1).reset_index()
+hist_df2_grp_concat = hist_df2_grp_concat.loc[:,~hist_df2_grp_concat.columns.duplicated()]
+merch_df2_grp_concat = pd.concat([merch_df2_grp_purchase_amount,merch_df2_grp_installments],sort=False,axis=1).reset_index()
+merch_df2_grp_concat = hist_df2_grp_concat.loc[:,~merch_df2_grp_concat.columns.duplicated()]
+
+# Month Lag Groups
+agg_col = 'purchase_amount'
+prefix = 'hist_month_lag' + agg_col
+hist_df2_grp_month_lag_purchase_amount = hist_df2.groupby(["card_id","month_lag"]).apply(agg_functions)
+
+agg_col = 'purchase_amount'
+prefix = 'merch_month_lag' + agg_col
+merch_df2_grp_month_lag_purchase_amount = merch_df2.groupby(["card_id","month_lag"]).apply(agg_functions)
+
+agg_col = 'installments'
+prefix = 'hist_month_lag' + agg_col
+hist_df2_grp_month_lag_installments = hist_df2.groupby(["card_id","month_lag"]).apply(agg_functions)
+
+agg_col = 'installments'
+prefix = 'merch_month_lag' + agg_col
+merch_df2_grp_month_lag_installments = merch_df2.groupby(["card_id","month_lag"]).apply(agg_functions)
+
+hist_df2_grp_month_lag_concat = pd.concat([hist_df2_grp_month_lag_purchase_amount,hist_df2_grp_month_lag_installments],sort=False,axis=1).reset_index()
+hist_df2_grp_month_lag_concat = hist_df2_grp_month_lag_concat.loc[:,~hist_df2_grp_month_lag_concat.columns.duplicated()]
+merch_df2_grp_month_lag_concat = pd.concat([merch_df2_grp_month_lag_purchase_amount,merch_df2_grp_month_lag_installments],sort=False,axis=1).reset_index()
+merch_df2_grp_month_lag_concat = merch_df2_grp_month_lag_concat.loc[:,~merch_df2_grp_month_lag_concat.columns.duplicated()]
+
+# Time Groups
+agg_col = 'purchase_amount'
+prefix = 'hist_year' + agg_col
+hist_df2_grp_year_purchase_amount = hist_df2.groupby(["card_id","year"]).apply(agg_functions)
+
+agg_col = 'purchase_amount'
+prefix = 'merch_year' + agg_col
+merch_df2_grp_year_purchase_amount = merch_df2.groupby(["card_id","year"]).apply(agg_functions)
+
+agg_col = 'purchase_amount'
+prefix = 'hist_year_month' + agg_col
+hist_df2_grp_month_purchase_amount = hist_df2.groupby(["card_id","year","month"]).apply(agg_functions)
+
+agg_col = 'purchase_amount'
+prefix = 'merch_year_month' + agg_col
+merch_df2_grp_month_purchase_amount = merch_df2.groupby(["card_id","year","month"]).apply(agg_functions)
+
+# agg_col = 'purchase_amount'
+# prefix = 'hist_year_day' + agg_col
+# hist_df2_grp_year = hist_df2.groupby(["card_id","year","day"]).apply(agg_functions)
+
+# agg_col = 'purchase_amount'
+# prefix = 'merch_year_day' + agg_col
+# merch_df2_grp_year = merch_df2.groupby(["card_id","year","day"]).apply(agg_functions)
+
+
+agg_col = 'installments'
+prefix = 'hist_year' + agg_col
+hist_df2_grp_year_installments = hist_df2.groupby(["card_id","year"]).apply(agg_functions)
+
+agg_col = 'installments'
+prefix = 'merch_year' + agg_col
+merch_df2_grp_year_installments = merch_df2.groupby(["card_id","year"]).apply(agg_functions)
+
+agg_col = 'installments'
+prefix = 'hist_year_month' + agg_col
+hist_df2_grp_month_installments = hist_df2.groupby(["card_id","year","month"]).apply(agg_functions)
+
+agg_col = 'installments'
+prefix = 'merch_year_month' + agg_col
+merch_df2_grp_month_installments = merch_df2.groupby(["card_id","year","month"]).apply(agg_functions)
+
+# agg_col = 'installments'
+# prefix = 'hist_year_day' + agg_col
+# hist_df2_grp_year = hist_df2.groupby(["card_id","year","day"]).apply(agg_functions)
+
+# agg_col = 'installments'
+# prefix = 'merch_year_day' + agg_col
+# merch_df2_grp_year = merch_df2.groupby(["card_id","year","day"]).apply(agg_functions)
+
+
+
+# Join on Successive Aggregates
+train_df2 = pd.merge(train_df2, hist_df2_grp_concat, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, hist_df2_grp_concat, on="card_id", how="left")
+
+train_df2 = pd.merge(train_df2, merch_df2_grp_concat, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, merch_df2_grp_concat, on="card_id", how="left")
+
+# month lag
+train_df2 = pd.merge(train_df2, hist_df2_grp_month_lag_concat, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, hist_df2_grp_month_lag_concat, on="card_id", how="left")
+
+train_df2 = pd.merge(train_df2, merch_df2_grp_month_lag_concat, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, merch_df2_grp_month_lag_concat, on="card_id", how="left")
+
+# purchase amount
+train_df2 = pd.merge(train_df2, hist_df2_grp_year_purchase_amount, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, hist_df2_grp_year_purchase_amount, on="card_id", how="left")
+
+train_df2 = pd.merge(train_df2, merch_df2_grp_year_purchase_amount, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, merch_df2_grp_year_purchase_amount, on="card_id", how="left")
+
+train_df2 = pd.merge(train_df2, hist_df2_grp_month_purchase_amount, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, hist_df2_grp_month_purchase_amount, on="card_id", how="left")
+
+train_df2 = pd.merge(train_df2, merch_df2_grp_month_purchase_amount, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, merch_df2_grp_month_purchase_amount, on="card_id", how="left")
+
+#installments
+train_df2 = pd.merge(train_df2, hist_df2_grp_year_installments, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, hist_df2_grp_year_installments, on="card_id", how="left")
+
+train_df2 = pd.merge(train_df2, merch_df2_grp_year_installments, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, merch_df2_grp_year_installments, on="card_id", how="left")
+
+train_df2 = pd.merge(train_df2, hist_df2_grp_month_installments, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, hist_df2_grp_month_installments, on="card_id", how="left")
+
+train_df2 = pd.merge(train_df2, merch_df2_grp_month_installments, on="card_id", how="left")
+test_df2 = pd.merge(test_df2, merch_df2_grp_month_installments, on="card_id", how="left")
