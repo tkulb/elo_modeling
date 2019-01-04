@@ -1,0 +1,78 @@
+#stacking algorithms
+start = timeit.default_timer()
+
+y_valid_trans=lab_enc.inverse_transform(y_valid)
+valid_pred_df = pd.DataFrame(y_valid,columns=["target"])
+valid_pred_df_trans = pd.DataFrame(y_valid_trans,columns=["target"])
+
+y_train_trans=lab_enc.inverse_transform(y_training)
+train_pred_df = pd.DataFrame(y_training,columns=["target"])
+train_pred_df_trans = pd.DataFrame(y_train_trans,columns=["target"])
+
+logs = ["Classifier","RMSE"]
+results_log = pd.DataFrame(columns=logs)
+
+classifier = [
+              RandomForestClassifier()
+#               ,GradientBoostingClassifier()
+#               ,LogisticRegression()
+              ,KNeighborsClassifier()
+              ,LinearSVC()
+#               ,GaussianNB()
+             ]
+
+for x in classifier:
+    x.fit(X_training,y_training)
+    name = x.__class__.__name__
+
+    train_predictions = x.predict(X_training)
+    train_preds = pd.DataFrame(train_predictions,columns=[name])
+    train_preds_trans = pd.DataFrame(lab_enc.inverse_transform(train_predictions),columns=[name])
+    train_pred_df=pd.concat([train_preds,train_pred_df],axis=1)
+    train_pred_df_trans=pd.concat([train_preds_trans,train_pred_df_trans],axis=1)
+    
+    valid_predictions = x.predict(X_valid)
+    valid_preds = pd.DataFrame(valid_predictions,columns=[name])
+    valid_preds_trans = pd.DataFrame(lab_enc.inverse_transform(valid_predictions),columns=[name])
+
+    valid_pred_df=pd.concat([valid_preds,valid_pred_df],axis=1)
+    valid_pred_df_trans=pd.concat([valid_preds_trans,valid_pred_df_trans],axis=1)
+    
+    delta = valid_preds_trans.iloc[:,0] - y_valid_trans
+    rmse = np.sqrt(sum(np.square(delta)))
+    print(name, "scores RMSE of:", round(rmse,2))
+
+    log_entry = pd.DataFrame([[name,rmse]], columns = logs)
+    results_log = results_log.append(log_entry)
+
+# find rmse with straight avg
+valid_pred_df_trans["prediction_avg"] = valid_pred_df_trans.drop(['target'],axis=1).mean(axis=1)
+delta = valid_pred_df_trans["prediction_avg"] - y_valid_trans
+rmse = np.sqrt(sum(np.square(delta)))
+print("Straight Average RMSE:", round(rmse,2))
+
+name = "Ensemble Average"
+log_entry = pd.DataFrame([[name,rmse]], columns = logs)
+results_log = results_log.append(log_entry)
+
+# fit a linear regression and find rmse - scored on training data still
+ensemble = LogisticRegression()
+X = train_pred_df.drop('target',axis=1)
+ensemble.fit(train_pred_df.drop('target',axis=1),train_pred_df.loc[:,'target'])
+
+ensemble_preds = ensemble.predict(valid_pred_df.drop('target',axis=1))
+ensemble_preds_trans = lab_enc.inverse_transform(ensemble_preds)
+delta = ensemble_preds_trans - y_valid_trans
+rmse = np.sqrt(sum(np.square(delta)))
+print("Ensemble RMSE:", round(rmse,2))
+# print(ensemble.coef_)
+# print(np.std(X, 0)*ensemble.coef_)
+
+name = "Ensemble Linear"
+log_entry = pd.DataFrame([[name,rmse]], columns = logs)
+results_log = results_log.append(log_entry)
+
+print(results_log)
+
+end = timeit.default_timer()
+print("total time:",round(end-start,2),"seconds. ",round((end-start)/60,2),"minutes.")
