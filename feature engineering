@@ -43,13 +43,9 @@ test_df2 = test_df
 
 reduce_mem_usage(train_df2)
 reduce_mem_usage(test_df2)
-elo-merchant-category-recommendation  simple-exploration-notebook-elo-259e08
-Number of rows and columns in train set :  (201917, 6)
-Number of rows and columns in test set :  (123623, 5)
-Mem. usage decreased to  4.04 Mb (56.2% reduction)
-Mem. usage decreased to  2.24 Mb (52.5% reduction)
-CPU times: user 492 ms, sys: 108 ms, total: 600 ms
-Wall time: 1.11 s
+
+
+
 train_df2['outliers'] = 0
 train_df2.loc[train_df2['target'] < -30, 'outliers'] = 1
 train_df2['outliers'].value_counts()
